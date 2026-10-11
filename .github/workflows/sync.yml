@@ -57,18 +57,18 @@ jobs:
           git push origin upstream --force-with-lease
 
       - name: Merge upstream into master
+        # run: blocks are bash. Do not use PowerShell backtick continuations here;
+        # a backtick starts command substitution in bash.
         run: |
           set -euo pipefail
           git checkout -B master origin/master
-          if git merge --no-edit `
-                -m "chore: sync upstream $(git rev-parse --short upstream/master) [skip ci]" `
-                upstream/master; then
-            echo "merge ok"
-          else
+          short=$(git rev-parse --short upstream/master)
+          if ! git merge --no-edit -m "chore: sync upstream $short [skip ci]" upstream/master; then
             echo "::error::upstream merge conflict, manual resolution needed (scoop-fork/README.md section 4)"
             git merge --abort
             exit 1
           fi
+          echo "merge ok"
 
       - name: Guard the patch footprint
         run: |
