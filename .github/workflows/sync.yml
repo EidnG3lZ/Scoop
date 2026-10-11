@@ -1,0 +1,96 @@
+# scoop-proxy-fork / sync.yml
+#
+# Copy this file to <fork>/.github/workflows/sync.yml on the fork's default branch
+# (master). It keeps that branch in lock-step with ScoopInstaller/Scoop while the
+# cf-git-proxy patch stays on top.
+#
+# Contract, in order of importance:
+#   1. The user-tracked branch (master) only ever moves forward: merge, never rebase,
+#      never force-push. Every 'scoop update' on a user machine is then a
+#      fast-forward. See docs/scoop-fork-plan.md, constraint C2.
+#   2. The mirror branch (upstream) is disposable and is force-with-lease pushed.
+#   3. Nothing outside the patch footprint may reach master; the guard below fails
+#      the run before the push if it would.
+
+name: sync-upstream
+
+on:
+  schedule:
+    # Every 6 hours, deliberately off the hour: GitHub's scheduler is congested
+    # at :00 and delayed runs are common.
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types:
+      - sync-upstream
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # a merge needs the full history
+
+      - name: Fetch upstream
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/ScoopInstaller/Scoop.git
+          git fetch --no-tags upstream master
+          git config user.name  'scoop-sync-bot'
+          git config user.email 'scoop-sync-bot@users.noreply.github.com'
+          echo "upstream head: $(git rev-parse --short upstream/master)"
+
+      - name: Update the mirror branch
+        # Disposable: this is the rollback baseline and the 'git diff upstream master'
+        # reference, not something anyone tracks for updates.
+        run: |
+          set -euo pipefail
+          git checkout -B upstream upstream/master
+          git push origin upstream --force-with-lease
+
+      - name: Merge upstream into master
+        run: |
+          set -euo pipefail
+          git checkout -B master origin/master
+          if git merge --no-edit `
+                -m "chore: sync upstream $(git rev-parse --short upstream/master) [skip ci]" `
+                upstream/master; then
+            echo "merge ok"
+          else
+            echo "::error::upstream merge conflict, manual resolution needed (scoop-fork/README.md section 4)"
+            git merge --abort
+            exit 1
+          fi
+
+      - name: Guard the patch footprint
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only upstream/master)
+          echo "changed files:"
+          echo "$changed"
+          bad=$(echo "$changed" | grep -Fxv -e 'lib/core.ps1' -e 'lib/download.ps1' -e 'lib/buckets.ps1' -e '.github/workflows/sync.yml' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::出现了白名单之外的文件改动：$bad"
+            exit 1
+          fi
+
+      - name: Parse every PowerShell file
+        # Catches a syntactically broken merge before it reaches any user.
+        run: |
+          pwsh -NoProfile -Command '$bad = 0; Get-ChildItem lib,libexec,bin -Filter *.ps1 -Recurse | ForEach-Object { $err = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$err); if ($err.Count) { Write-Host "FAIL $($_.FullName)"; $err | ForEach-Object { Write-Host $_ }; $bad++ } }; if ($bad) { exit 1 }'
+
+      - name: Push master
+        # Only reached when the merge and both guards succeeded, so master can only
+        # advance (fast-forward). Never use --force here.
+        run: |
+          set -euo pipefail
+          git push origin master:master
+
