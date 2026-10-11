@@ -88,7 +88,7 @@ function Start-Download ($url, $to, $cookies) {
 
 function Invoke-Download ($url, $to, $cookies, $progress) {
     # download with filesize and progress indicator
-    $reqUrl = ($url -split '#')[0]
+    $reqUrl = Url_Proxy (($url -split '#')[0])
     $wreq = [Net.WebRequest]::Create($reqUrl)
     if ($wreq -is [Net.HttpWebRequest]) {
         $wreq.UserAgent = Get-UserAgent
@@ -402,7 +402,7 @@ function Invoke-CachedAria2Download ($app, $version, $manifest, $architecture, $
                     warn 'Token might be misconfigured.'
                 }
             }
-            $urlstxt_content += "$try_url`n"
+            $urlstxt_content += "$(Url_Proxy $try_url)`n"
             if (!$url.Contains('sourceforge.net')) {
                 $urlstxt_content += "    referer=$(strip_filename $url)`n"
             }

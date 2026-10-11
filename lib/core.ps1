@@ -67,6 +67,50 @@ function Set-PESubsystem($filePath, $targetSubsystem) {
     return $true
 }
 
+# >>> cf-git-proxy begin >>>
+# Maintained by the scoop-proxy-fork project. Applied as a commit on the 'master'
+# branch of the fork; 'scoop update' overwrites this file wholesale, so do not
+# edit the deployed copy by hand - change the fork instead.
+function Get-CfProxyMap {
+    # GitHub-family download prefixes, mapped onto the proxy's short paths.
+    # Keep in sync with the short-path table in the Worker (src/index.js resolveTarget).
+    @(
+        @{ From = 'https://github.com/';                 Short = 'gh/' }
+        @{ From = 'https://raw.githubusercontent.com/';  Short = 'raw/' }
+        @{ From = 'https://codeload.github.com/';        Short = 'codeload/' }
+        @{ From = 'https://gist.githubusercontent.com/'; Short = 'gist/' }
+        @{ From = 'https://gist.github.com/';            Short = 'gist/' }
+    )
+}
+
+function Url_Proxy($url) {
+    if ([string]::IsNullOrWhiteSpace($url)) { return $url }
+
+    # No URL_PROXY configured -> leave every URL alone (one-command rollback).
+    $origin = ([string](get_config URL_PROXY)).Trim().TrimEnd('/')
+    if ([string]::IsNullOrWhiteSpace($origin)) { return $url }
+
+    $text = ([string]$url).Trim()
+    if (!$text.StartsWith('http://', [System.StringComparison]::OrdinalIgnoreCase) -and
+        !$text.StartsWith('https://', [System.StringComparison]::OrdinalIgnoreCase)) { return $url }
+
+    # Already pointed at the configured proxy -> never wrap twice.
+    $prefix = "$origin/"
+    if ($text.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $url }
+
+    # Prefix match is case-insensitive, while the rewrite below keeps the tail intact.
+    $originLen = $origin.Length
+    foreach ($m in Get-CfProxyMap) {
+        $fromLen = $m.From.Length
+        if ($text.Length -ge $fromLen -and
+            [string]::Equals($text.Substring(0, $fromLen), $m.From, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $origin + '/' + $m.Short + $text.Substring($fromLen)
+        }
+    }
+    return $url
+}
+# <<< cf-git-proxy end <<<
+
 function Optimize-SecurityProtocol {
     # .NET Framework 4.7+ has a default security protocol called 'SystemDefault',
     # which allows the operating system to choose the best protocol to use.
@@ -116,11 +160,22 @@ function load_cfg($file) {
 }
 
 function get_config($name, $default) {
+    # Both the requested name and the stored property name are compared
+    # case-insensitively ('scoop config URL_PROXY' stores 'URL_PROXY'; the config
+    # file on disk stores 'url_proxy'). Before cf-git-proxy this only lowercased
+    # the requested name, so a key written through the config file was invisible.
     $name = $name.ToLowerInvariant()
-    if ($null -eq $scoopConfig.$name -and $null -ne $default) {
+    $value = $scoopConfig.PSObject.Properties[$name]
+    if ($null -eq $value) {
+        $value = $scoopConfig.PSObject.Properties | Where-Object -Property Name -IEQ -Value $name | Select-Object -First 1
+        if ($null -ne $value) { return $value.Value }
+        if ($null -ne $default) { return $default }
+        return $null
+    }
+    if ($null -eq $value.Value -and $null -ne $default) {
         return $default
     }
-    return $scoopConfig.$name
+    return $value.Value
 }
 
 function set_config {

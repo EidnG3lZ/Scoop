@@ -120,6 +120,26 @@ function list_buckets {
     ,$buckets
 }
 
+# >>> cf-git-proxy begin >>>
+# Turns a proxied download/repo URL back into the plain upstream URL, for comparisons.
+# Companion to Url_Proxy in lib/core.ps1; keep the two in sync.
+function Get-UrlWithoutProxy([string] $url) {
+    if ([string]::IsNullOrWhiteSpace($url)) { return $url }
+
+    $origin = ([string](get_config URL_PROXY)).Trim().TrimEnd('/')
+    if ([string]::IsNullOrWhiteSpace($origin)) { return $url }
+
+    $text = ([string]$url).Trim()
+    foreach ($m in Get-CfProxyMap) {
+        $prefix = $origin + '/' + $m.Short
+        if ($text.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $m.From + $text.Substring($prefix.Length)
+        }
+    }
+    return $url
+}
+# <<< cf-git-proxy end <<<
+
 function add_bucket($name, $repo) {
     if (!(Test-GitAvailable)) {
         error "Git is required for buckets. Run 'scoop install git' and try again."
@@ -139,13 +159,16 @@ function add_bucket($name, $repo) {
     foreach ($bucket in Get-LocalBucket) {
         if (Test-Path -Path "$bucketsdir\$bucket\.git") {
             $remote = Invoke-Git -Path "$bucketsdir\$bucket" -ArgumentList @('config', '--get', 'remote.origin.url')
-            if ((Convert-RepositoryUri -Uri $remote) -eq $uni_repo) {
+            # Undo the proxy spelling before comparing: Convert-RepositoryUri cannot parse
+            # '<origin>/gh/owner/repo', so a proxied remote would otherwise never match $uni_repo.
+            if ((Convert-RepositoryUri -Uri (Get-UrlWithoutProxy $remote)) -eq $uni_repo) {
                 warn "Bucket $bucket already exists for $repo"
                 return 2
             }
         }
     }
 
+    $repo = Url_Proxy $repo
     Write-Host 'Checking repo... ' -NoNewline
     $out = Invoke-Git -ArgumentList @('ls-remote', $repo) 2>&1
     if ($LASTEXITCODE -ne 0) {
